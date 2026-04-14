@@ -1,0 +1,128 @@
+name: Build & Deploy to GCP Artifact Registry
+
+on:
+  push:
+    branches: [main, staging, develop]
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  IMAGE_NAME: ops-lab-server
+
+jobs:
+  build:
+    name: Build & Push Image
+    runs-on: ubuntu-latest
+
+    # Select the "GitHub environment" by branch
+    # "GitHub environment" is a GitHub feature that allows you to define different environments (like develop, staging, production, ...) and set environment-specific variables and secrets.
+    # Variables and secrets defined in an "Github environment" will only be available to jobs that specify that environment.
+    environment: ${{ github.ref_name == 'main' && 'production' || github.ref_name }}
+
+    outputs:
+      sha_short: ${{ steps.prep.outputs.sha_short }}
+      gcp_image_path: ${{ steps.prep.outputs.gcp_image_path }}
+      cloud_run_service: ${{ steps.prep.outputs.cloud_run_service }}
+
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v4
+
+      - name: Prepare variables
+        id: prep
+        shell: bash
+        run: |
+          SHA_SHORT=$(git rev-parse --short "${{ github.sha }}")
+          BRANCH_NAME="${{ github.ref_name }}"
+
+          case "$BRANCH_NAME" in
+            main)
+              GCP_IMAGE_PATH="${{ vars.GCP_AR_DOMAIN }}/${{ secrets.GCP_PROJECT_ID }}/vtt-ar-repo/ops-lab-server/production"
+              CLOUD_RUN_SERVICE="api"
+              ;;
+            staging)
+              GCP_IMAGE_PATH="${{ vars.GCP_AR_DOMAIN }}/${{ secrets.GCP_PROJECT_ID }}/vtt-ar-repo/ops-lab-server/staging"
+              CLOUD_RUN_SERVICE="staging-api"
+              ;;
+            develop)
+              GCP_IMAGE_PATH="${{ vars.GCP_AR_DOMAIN }}/${{ secrets.GCP_PROJECT_ID }}/vtt-ar-repo/ops-lab-server/develop"
+              CLOUD_RUN_SERVICE="dev-api"
+              ;;
+            *)
+              echo "Unsupported branch: $BRANCH_NAME" >&2
+              exit 1
+              ;;
+          esac
+
+          echo "sha_short=$SHA_SHORT" >> $GITHUB_OUTPUT
+          echo "gcp_image_path=$GCP_IMAGE_PATH" >> $GITHUB_OUTPUT
+          echo "cloud_run_service=$CLOUD_RUN_SERVICE" >> $GITHUB_OUTPUT
+
+      - name: Authenticate to GCP
+        uses: google-github-actions/auth@v3
+        with:
+          project_id: ${{ secrets.GCP_PROJECT_ID }}
+          service_account: ${{ secrets.GCP_SERVICE_ACCOUNT }}
+          workload_identity_provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+
+      - name: Set up gcloud
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Configure Artifact Registry auth
+        run: |
+          gcloud auth configure-docker ${{ vars.GCP_AR_DOMAIN }} --quiet
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build image
+        run: |
+          docker build -t "${IMAGE_NAME}:latest" .
+
+      - name: Push image to GCP Artifact Registry
+        env:
+          GCP_IMAGE_PATH: ${{ steps.prep.outputs.gcp_image_path }}
+          SHA_SHORT: ${{ steps.prep.outputs.sha_short }}
+        run: |
+          docker tag "${IMAGE_NAME}:latest" "${GCP_IMAGE_PATH}:latest"
+          docker tag "${IMAGE_NAME}:latest" "${GCP_IMAGE_PATH}:${SHA_SHORT}"
+
+          docker push "${GCP_IMAGE_PATH}:latest"
+          docker push "${GCP_IMAGE_PATH}:${SHA_SHORT}"
+
+  # deploy:
+  #   name: Deploy to Cloud Run
+  #   runs-on: ubuntu-latest
+  #   needs: build
+
+  #   if: github.ref_name == 'staging' || github.ref_name == 'develop'
+
+  #   steps:
+  #     - name: Authenticate to GCP
+  #       uses: google-github-actions/auth@v3
+  #       with:
+  #         project_id: ${{ secrets.GCP_PROJECT_ID }}
+  #         workload_identity_provider: ${{ secrets.WORKLOAD_IDENTITY_PROVIDER }}
+  #         service_account: ${{ vars.GCP_SERVICE_ACCOUNT }}
+
+  #     - name: Set up gcloud
+  #       uses: google-github-actions/setup-gcloud@v2
+
+  #     - name: Deploy to Cloud Run
+  #       env:
+  #         GCP_IMAGE_PATH: ${{ needs.build.outputs.gcp_image_path }}
+  #         IMAGE_TAG: ${{ needs.build.outputs.sha_short }}
+  #         CLOUD_RUN_SERVICE: ${{ needs.build.outputs.cloud_run_service }}
+  #       run: |
+  #         gcloud run deploy "$CLOUD_RUN_SERVICE" \
+  #           --image "$GCP_IMAGE_PATH:$IMAGE_TAG" \
+  #           --region "${{ vars.GCP_REGION }}" \
+  #           --platform managed \
+  #           --project "${{ secrets.GCP_PROJECT_ID }}" \
+  #           --quiet

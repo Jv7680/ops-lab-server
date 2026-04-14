@@ -1,0 +1,111 @@
+# name: Build & Deploy to GCP Artifact Registry
+
+# on:
+#   push:
+#     branches: [main, staging, develop]
+
+# permissions:
+#   contents: read
+#   id-token: write
+
+# concurrency:
+#   group: build-${{ github.ref }}
+#   cancel-in-progress: true
+
+# env:
+#   IMAGE_NAME: api
+
+# jobs:
+#   build:
+#     name: Build and Deploy
+#     runs-on: ubuntu-latest
+
+#     environment: ${{ github.ref_name == 'main' && 'production' || github.ref_name }}
+
+#     steps:
+#       - name: Checkout code
+#         uses: actions/checkout@v4
+
+#       # 🧠 Prepare dynamic variables
+#       - name: Prepare variables
+#         id: prep
+#         run: |
+#           SHA_SHORT=$(git rev-parse --short "$GITHUB_SHA")
+#           BRANCH_NAME="${GITHUB_REF_NAME}"
+
+#           case "$BRANCH_NAME" in
+#             main)
+#               IMAGE_PATH="${{ vars.GCP_REGION }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/service/api"
+#               SERVICE_NAME="api"
+#               ;;
+#             staging)
+#               IMAGE_PATH="${{ vars.GCP_REGION }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/service/api-staging"
+#               SERVICE_NAME="staging-api"
+#               ;;
+#             develop)
+#               IMAGE_PATH="${{ vars.GCP_REGION }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/service/api-develop"
+#               SERVICE_NAME="dev-api"
+#               ;;
+#             *)
+#               echo "Unsupported branch: $BRANCH_NAME"
+#               exit 1
+#               ;;
+#           esac
+
+#           echo "sha_short=$SHA_SHORT" >> $GITHUB_OUTPUT
+#           echo "image_path=$IMAGE_PATH" >> $GITHUB_OUTPUT
+#           echo "service_name=$SERVICE_NAME" >> $GITHUB_OUTPUT
+
+#       # 🔐 Authenticate to GCP
+#       - name: Authenticate to GCP
+#         uses: google-github-actions/auth@v3
+#         with:
+#           project_id: ${{ secrets.GCP_PROJECT_ID }}
+#           workload_identity_provider: ${{ secrets.WORKLOAD_IDENTITY_PROVIDER }}
+#           service_account: ${{ vars.GCP_SERVICE_ACCOUNT }}
+
+#       - name: Setup gcloud
+#         uses: google-github-actions/setup-gcloud@v2
+
+#       - name: Configure Docker for Artifact Registry
+#         run: |
+#           gcloud auth configure-docker ${{ vars.GCP_REGION }}-docker.pkg.dev --quiet
+
+#       # 🐳 Build Docker image
+#       - name: Build image
+#         uses: docker/build-push-action@v6
+#         with:
+#           context: .
+#           file: ./Dockerfile
+#           platforms: linux/amd64
+#           push: false
+#           tags: api:latest
+#           cache-from: type=gha
+#           cache-to: type=gha,mode=max
+
+#       # 📦 Push to GCP Artifact Registry
+#       - name: Push image to GCP
+#         env:
+#           IMAGE_PATH: ${{ steps.prep.outputs.image_path }}
+#           IMAGE_TAG: ${{ steps.prep.outputs.sha_short }}
+#         run: |
+#           docker tag api:latest "$IMAGE_PATH:latest"
+#           docker tag api:latest "$IMAGE_PATH:$IMAGE_TAG"
+
+#           docker push "$IMAGE_PATH:latest"
+#           docker push "$IMAGE_PATH:$IMAGE_TAG"
+
+#       # 🚀 Deploy to Cloud Run
+#       - name: Deploy to Cloud Run
+#         if: github.ref_name != 'main'
+#         env:
+#           IMAGE_PATH: ${{ steps.prep.outputs.image_path }}
+#           IMAGE_TAG: ${{ steps.prep.outputs.sha_short }}
+#           SERVICE_NAME: ${{ steps.prep.outputs.service_name }}
+#         run: |
+#           gcloud run deploy "$SERVICE_NAME" \
+#             --image "$IMAGE_PATH:$IMAGE_TAG" \
+#             --region "${{ vars.GCP_REGION }}" \
+#             --platform managed \
+#             --project "${{ secrets.GCP_PROJECT_ID }}" \
+#             --quiet

@@ -1,0 +1,41 @@
+# name: Build And Deploy
+
+# on:
+#   push:
+#     branches:
+#       - develop
+#       - main
+
+# jobs:
+#   build:
+#     runs-on: ubuntu-latest
+
+#     # Select environment by branch
+#     environment: ${{ github.ref_name == 'main' && 'production' || 'develop' }}
+
+#     steps:
+#       - name: Debug selected ENV
+#         run: |
+#           env
+#           echo "NODE_ENV=${{ vars.NODE_ENV }}"
+#           echo "PORT=${{ vars.PORT }}"
+
+#       - name: Checkout code
+#         uses: actions/checkout@v6
+
+#       - name: Use Node.js
+#         uses: actions/setup-node@v4
+#         with:
+#           node-version: 22
+
+#       - name: Build Docker image
+#         run: |
+#           docker build -t my-nest-app .
+
+#       - name: Run Docker container
+#         run: |
+#           docker run -d \
+#             -p ${{ vars.PORT }}:${{ vars.PORT }} \
+#             -e NODE_ENV=${{ vars.NODE_ENV }} \
+#             -e PORT=${{ vars.PORT }} \
+#             my-nest-app

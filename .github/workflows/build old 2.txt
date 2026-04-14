@@ -1,0 +1,256 @@
+# name: Build & Deploy to GCP Artifact Registry
+
+# on:
+#   push:
+#     branches: [main, staging, develop]
+
+# permissions:
+#   contents: read
+#   id-token: write
+
+# concurrency:
+#   group: build-${{ github.ref }}
+#   cancel-in-progress: true
+
+# # This env can also be used in all jobs/steps
+# # In jobs/steps, you can override this env or add more env variables, but it will affect only that job/step and won't change the env for other jobs/steps.
+# # Remember, you can only use env in "run" (eg: run: echo "IMAGE_NAME=$IMAGE_NAME").
+# env:
+#   IMAGE_NAME: api
+#   BRANCH_NAME: ${{ github.ref_name }}
+
+# # Each job is run in parallel by default, but you can specify dependencies between jobs using the "needs" keyword.
+# jobs:
+#   Debug:
+#     runs-on: ubuntu-latest
+
+#     # Select the "GitHub environment" by branch
+#     # "GitHub environment" is a GitHub feature that allows you to define different environments (like develop, staging, production, ...) and set environment-specific variables and secrets.
+#     # Variables and secrets defined in an "Github environment" will only be available to jobs that specify that environment.
+#     environment: ${{ github.ref_name == 'main' && 'production' || 'develop' }}
+
+#     env:
+#       # This env is only for this job and won't affect other jobs
+#       NODE_ENV: ${{ vars.NODE_ENV }}
+#       PORT: ${{ vars.PORT }}
+#       GCP_AR_DOMAIN: ${{ vars.GCP_AR_DOMAIN }}
+#       GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
+#       GCP_SERVICE_ACCOUNT: ${{ vars.GCP_SERVICE_ACCOUNT }}
+#       GCP_WORKLOAD_IDENTITY_PROVIDER: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+
+#     # Steps for this job
+#     # Each step is run sequentially, and in separate shells, so environment variables set in one step won't persist to the next step unless they are explicitly passed as outputs or defined at the job level.
+#     steps:
+#       - name: Debug ENV
+#         run: |
+#           env
+#           echo "=================== Debugging Environment Variables ==================="
+#           echo "NODE_ENV=${NODE_ENV}"
+#           echo "PORT=${PORT}"
+#           echo "GCP_AR_DOMAIN=${GCP_AR_DOMAIN}"
+#           echo "GCP_PROJECT_ID=${GCP_PROJECT_ID}"
+#           echo "GCP_SERVICE_ACCOUNT=${GCP_SERVICE_ACCOUNT}"
+#           echo "GCP_WORKLOAD_IDENTITY_PROVIDER=${GCP_WORKLOAD_IDENTITY_PROVIDER}"
+#           echo "======================================================================"
+
+#   Build:
+#     name: Build
+#     runs-on: ubuntu-latest
+#     environment: ${{ github.ref_name == 'main' && 'production' || github.ref_name }}
+
+#     steps:
+#       - name: Checkout code
+#         uses: actions/checkout@v4
+
+#       # 🧠 Prepare dynamic variables
+#       - name: Prepare variables
+#         id: prep
+#         run: |
+#           SHA_SHORT=$(git rev-parse --short "$GITHUB_SHA")
+#           BRANCH_NAME="${GITHUB_REF_NAME}"
+
+#           case "$BRANCH_NAME" in
+#             main)
+#               IMAGE_PATH="${{ vars.GCP_REGION }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/service/api"
+#               SERVICE_NAME="api"
+#               ;;
+#             staging)
+#               IMAGE_PATH="${{ vars.GCP_REGION }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/service/api-staging"
+#               SERVICE_NAME="staging-api"
+#               ;;
+#             develop)
+#               IMAGE_PATH="${{ vars.GCP_REGION }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/service/api-develop"
+#               SERVICE_NAME="dev-api"
+#               ;;
+#             *)
+#               echo "Unsupported branch: $BRANCH_NAME"
+#               exit 1
+#               ;;
+#           esac
+
+#           echo "sha_short=$SHA_SHORT" >> $GITHUB_OUTPUT
+#           echo "image_path=$IMAGE_PATH" >> $GITHUB_OUTPUT
+#           echo "service_name=$SERVICE_NAME" >> $GITHUB_OUTPUT
+
+#       # 🔐 Authenticate to GCP
+#       # - name: Authenticate to GCP
+#       #   uses: google-github-actions/auth@v3
+#       #   with:
+#       #     project_id: ${{ secrets.GCP_PROJECT_ID }}
+#       #     workload_identity_provider: ${{ secrets.WORKLOAD_IDENTITY_PROVIDER }}
+#       #     service_account: ${{ vars.GCP_SERVICE_ACCOUNT }}
+
+#       # - name: Setup gcloud
+#       #   uses: google-github-actions/setup-gcloud@v2
+
+#       # - name: Configure Docker for Artifact Registry
+#       #   run: |
+#       #     gcloud auth configure-docker ${{ vars.GCP_REGION }}-docker.pkg.dev --quiet
+
+#       # # 🐳 Build Docker image
+#       # - name: Build image
+#       #   uses: docker/build-push-action@v6
+#       #   with:
+#       #     context: .
+#       #     file: ./Dockerfile
+#       #     platforms: linux/amd64
+#       #     push: false
+#       #     tags: api:latest
+#       #     cache-from: type=gha
+#       #     cache-to: type=gha,mode=max
+
+#       # # 📦 Push to GCP Artifact Registry
+#       # - name: Push image to GCP
+#       #   env:
+#       #     IMAGE_PATH: ${{ steps.prep.outputs.image_path }}
+#       #     IMAGE_TAG: ${{ steps.prep.outputs.sha_short }}
+#       #   run: |
+#       #     docker tag api:latest "$IMAGE_PATH:latest"
+#       #     docker tag api:latest "$IMAGE_PATH:$IMAGE_TAG"
+
+#       #     docker push "$IMAGE_PATH:latest"
+#       #     docker push "$IMAGE_PATH:$IMAGE_TAG"
+
+#       # # 🚀 Deploy to Cloud Run
+#       # - name: Deploy to Cloud Run
+#       #   if: github.ref_name != 'main'
+#       #   env:
+#       #     IMAGE_PATH: ${{ steps.prep.outputs.image_path }}
+#       #     IMAGE_TAG: ${{ steps.prep.outputs.sha_short }}
+#       #     SERVICE_NAME: ${{ steps.prep.outputs.service_name }}
+#       #   run: |
+#       #     gcloud run deploy "$SERVICE_NAME" \
+#       #       --image "$IMAGE_PATH:$IMAGE_TAG" \
+#       #       --region "${{ vars.GCP_REGION }}" \
+#       #       --platform managed \
+#       #       --project "${{ secrets.GCP_PROJECT_ID }}" \
+#       #       --quiet
+
+#   Buildx:
+#     name: Build and Deploy
+#     runs-on: ubuntu-latest
+
+#     # This job will only run after the "Debug" job is completed.
+#     needs: Debug
+
+#     environment: ${{ github.ref_name == 'main' && 'production' || github.ref_name }}
+
+#     steps:
+#       - name: Debug ENV
+#         run: |
+#           env
+#           echo "=================== Debugging Environment Variables ==================="
+#           echo "NODE_ENV=${NODE_ENV}"
+#           echo "PORT=${PORT}"
+#           echo "GCP_AR_DOMAIN=${GCP_AR_DOMAIN}"
+#           echo "GCP_PROJECT_ID=${GCP_PROJECT_ID}"
+#           echo "GCP_SERVICE_ACCOUNT=${GCP_SERVICE_ACCOUNT}"
+#           echo "GCP_WORKLOAD_IDENTITY_PROVIDER=${GCP_WORKLOAD_IDENTITY_PROVIDER}"
+#           echo "======================================================================"
+
+#       - name: Checkout code
+#         uses: actions/checkout@v4
+
+#       # 🧠 Prepare dynamic variables
+#       - name: Prepare variables
+#         id: prep
+#         run: |
+#           SHA_SHORT=$(git rev-parse --short "$GITHUB_SHA")
+#           BRANCH_NAME="${GITHUB_REF_NAME}"
+
+#           case "$BRANCH_NAME" in
+#             main)
+#               IMAGE_PATH="${{ vars.GCP_REGION }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/service/api"
+#               SERVICE_NAME="api"
+#               ;;
+#             staging)
+#               IMAGE_PATH="${{ vars.GCP_REGION }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/service/api-staging"
+#               SERVICE_NAME="staging-api"
+#               ;;
+#             develop)
+#               IMAGE_PATH="${{ vars.GCP_REGION }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/service/api-develop"
+#               SERVICE_NAME="dev-api"
+#               ;;
+#             *)
+#               echo "Unsupported branch: $BRANCH_NAME"
+#               exit 1
+#               ;;
+#           esac
+
+#           echo "sha_short=$SHA_SHORT" >> $GITHUB_OUTPUT
+#           echo "image_path=$IMAGE_PATH" >> $GITHUB_OUTPUT
+#           echo "service_name=$SERVICE_NAME" >> $GITHUB_OUTPUT
+
+#       # 🔐 Authenticate to GCP
+#       # - name: Authenticate to GCP
+#       #   uses: google-github-actions/auth@v3
+#       #   with:
+#       #     project_id: ${{ secrets.GCP_PROJECT_ID }}
+#       #     workload_identity_provider: ${{ secrets.WORKLOAD_IDENTITY_PROVIDER }}
+#       #     service_account: ${{ vars.GCP_SERVICE_ACCOUNT }}
+
+#       # - name: Setup gcloud
+#       #   uses: google-github-actions/setup-gcloud@v2
+
+#       # - name: Configure Docker for Artifact Registry
+#       #   run: |
+#       #     gcloud auth configure-docker ${{ vars.GCP_REGION }}-docker.pkg.dev --quiet
+
+#       # # 🐳 Build Docker image
+#       # - name: Build image
+#       #   uses: docker/build-push-action@v6
+#       #   with:
+#       #     context: .
+#       #     file: ./Dockerfile
+#       #     platforms: linux/amd64
+#       #     push: false
+#       #     tags: api:latest
+#       #     cache-from: type=gha
+#       #     cache-to: type=gha,mode=max
+
+#       # # 📦 Push to GCP Artifact Registry
+#       # - name: Push image to GCP
+#       #   env:
+#       #     IMAGE_PATH: ${{ steps.prep.outputs.image_path }}
+#       #     IMAGE_TAG: ${{ steps.prep.outputs.sha_short }}
+#       #   run: |
+#       #     docker tag api:latest "$IMAGE_PATH:latest"
+#       #     docker tag api:latest "$IMAGE_PATH:$IMAGE_TAG"
+
+#       #     docker push "$IMAGE_PATH:latest"
+#       #     docker push "$IMAGE_PATH:$IMAGE_TAG"
+
+#       # # 🚀 Deploy to Cloud Run
+#       # - name: Deploy to Cloud Run
+#       #   if: github.ref_name != 'main'
+#       #   env:
+#       #     IMAGE_PATH: ${{ steps.prep.outputs.image_path }}
+#       #     IMAGE_TAG: ${{ steps.prep.outputs.sha_short }}
+#       #     SERVICE_NAME: ${{ steps.prep.outputs.service_name }}
+#       #   run: |
+#       #     gcloud run deploy "$SERVICE_NAME" \
+#       #       --image "$IMAGE_PATH:$IMAGE_TAG" \
+#       #       --region "${{ vars.GCP_REGION }}" \
+#       #       --platform managed \
+#       #       --project "${{ secrets.GCP_PROJECT_ID }}" \
+#       #       --quiet
